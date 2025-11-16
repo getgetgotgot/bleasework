@@ -1,0 +1,229 @@
+---
+title: "Final_Report"
+format: html
+---
+
+# 1. Introduction
+
+# 2. Data Tidying
+
+```{r setup, include=FALSE}
+
+#DO NOT REMOVE, this is to set the global message settings and library imports for every single code block afterwards.
+
+library(tidyverse)
+library(readxl)
+
+knitr::opts_chunk$set(message = FALSE)
+```
+
+## 2.1 Principle 1: Each type of case must have its own tibble. (Draft ver.)
+
+what is principle 1...
+
+### 2.1.1 Monthly Survey
+
+**a. What do monthly survey questionnaires contain?**
+
+The monthly survey is a compilation of survey questions that were asked across different months. Monthly questionnaire data sets are stored in different CSV files per different month (e.g. `SurveyMonthly.2010_04.csv`). However, based on our research questions, some of the monthly data sets are irrelevant. We decide to check whether survey questions across different months overlap, if not, we will only take the data sets that are relevant to our research questions into further data tidying process.
+
+First, we imported all the monthly survey data sets into separate data frames:
+
+```{r}
+#creating tibbles for monthly survey per month
+
+monthly_files <- c(
+  "InitialSurvey.csv",
+  "SurveyMonthly.2010_04.csv",
+  "SurveyMonthly.2010_05.csv",
+  "SurveyMonthly.2010_07.csv",
+  "SurveyMonthly.2010_10.csv",
+  "SurveyMonthly.2010_11.csv",
+  "SurveyMonthly.2010_12.csv",
+  "SurveyMonthly.2011_03.csv",
+  "SurveyMonthly.2011_04.csv"
+)
+
+monthly_names <- c(
+  "initial_df",
+  "month1004_df",
+  "month1005_df",
+  "month1007_df",
+  "month1010_df",
+  "month1011_df",
+  "month1012_df",
+  "month1103_df",
+  "month1104_df"
+)
+for(i in 1:length(monthly_files)) {
+  assign(monthly_names[i], read.csv(monthly_files[i]))
+}
+```
+
+Beneath is one example of the code how we check the primary key across all monthly data sets.
+
+```{r}
+#check whether participantID is the primary key
+
+month1103_df |> 
+  count(participantID) |> 
+  filter(n>1)
+```
+
+We used the same code across different monthly data sets and confirmed that `participantID` is indeed the primary key for all of them. Thus, `participantID` will be included in all separate tibbles we created to act as the foreign key.
+
+In the Friends and Family data compilation, there is a file called `SurveyMonthlyQuestionKey.csv`, which listed out all the scale names, scale items, and in which monthly survey were they being asked. We manually checked the relevant scales according to the question key file. For example, for the research objectives "friendship network change", the relevant scale is called "group involvement", which was measured by several items across different months. For items like "Formal group involvement", it was only measured once in the initial survey, while for items like "Formal groups participation changed“ and "Formal groups new involvement“, it is more like an update to previous survey responses, thus were measured in both April and May, 2010, as it is listed below.
+
+```{r}
+survey_key = read_excel("SurveyMonthlyQuestionKey.xlsx")
+group_itemskey = survey_key |> 
+  slice(c(168:171, 186:195))
+view(group_itemskey)
+```
+
+According to the case we are using, (participant, month), we extract items like "Formal groups participation changed“ and "Formal groups new involvement“ from different monthly survey and store them in different tibbles (e.g. `mar_group`, `apr_group`, as mentioned in the following paragraphs).
+
+**b. Creating tibbles for different cases**
+
+Except for participants' demographics, the case we select is (participant, months).
+
+***Initial Survey/March, 2010***
+
+For the case (participant), we create separate tibble for demographics:
+
+```{r}
+mar_demo = initial_df |> select(1:19)
+```
+
+group participation
+
+```{r}
+mar_group = initial_df |> select(c(1, 53:76))
+```
+
+Communication with friends
+
+```{r}
+mar10_commu = initial_df |> select(c(1, 277:280))
+```
+
+***Monthly survey April, 2010***
+
+Big 5
+
+```{r}
+apr_big5 = month1004_df |> select(c(1, 11:54))
+
+```
+
+group participation
+
+```{r}
+apr_group = month1004_df |> select(c(1, 55:114))
+view(apr_group)
+```
+
+***Monthly survey May, 2010***
+
+group participation
+
+```{r}
+may_group = month1005_df |>select(c(1, 73:132))
+```
+
+well-being
+
+```{r}
+may_well_being = month1005_df |> select(c(1, 32:72))
+```
+
+***Monthly survey October, 2010***
+
+sleep actual
+
+```{r}
+oct_sleep_act = month1010_df |> select(c(1, 80))
+```
+
+Aerobic exercise actual
+
+```{r}
+oct_exe_act = month1010_df |> select(c(1, 62))
+view(oct_exe_act)
+```
+
+***Monthly survey March, 2011***
+
+Communication with friends
+
+```{r}
+mar11_commu = month1103_df |> select(c(1, 26:30))
+```
+
+### 2.1.2 Location
+
+Location every 30 minutes (`Location.csv.bz2`), with each record including the participant ID associated with the data-collecting mobile phone (`participantID`), the date-time when the location is recorded (`date`), the the 68% confidence offset of the estimation from true location(`accuracy`, in meters), and the estimated location affine-transformed (`x`, `y`).
+
+```{r}
+#create a tibble for Location.csv, and have a preview of the data set
+
+location_df = read.csv("Location.csv") |> arrange(participantID)
+head(location_df)
+```
+
+We tried to define the primary key, however, even if we combine all the column names together, the combination itself still cannot identify every single row uniquely, as it is shown in the following code:
+
+```{r}
+#check whether (participantID, date, accuracy, x, y) is the primary key
+
+location_df |> 
+  count(participantID, date, accuracy, x, y) |> 
+  filter(n>1) |> 
+  head()
+```
+
+We deemed that the duplicates were produced due to faulty data collection methods after reviewing the data description. Thus, we decided to remove duplicated data that has the exact value under every variable:
+
+```{r}
+location_df = location_df |> distinct()
+```
+
+In the new data frame, we found that (`participantID`, `date`) is the primary key, as it is shown in the following code:
+
+```{r}
+#check whether (participantID, date) is the primary key
+
+location_df |> 
+  count(participantID, date) |> 
+  filter(n>1)
+```
+
+In the final data frame, for the case participant ID, no characteristic was involved. For the case (`participantID`, `date`), we created a separate tibble according to principle 1:
+
+```{r}
+date_coordinates = location_df |> 
+  select(participantID, date, x, y) |> 
+  distinct()
+```
+
+## 2.3 Principle 3: Each variable must have its own column. (Draft ver.)
+
+According to the third principle, each variable must have its own column, and each column must be a variable. This implies, also, that each variable must be stored in its unique, separate column. Headers must be variable names, and not data; variables must not appear in both rows and columns.
+
+### 2.3.1 Monthly Survey
+
+For each of the relevant monthly survey tibbles, we must perform adequate tidying in accord with the principle.
+
+**Initial Survey/March, 2010**
+
+Group participation
+
+We may first inspect the original tibble. As one can observe, column headers contain multiple types of information: besides the belonging/involvement variable, they also contain group number (1-6) and group type (formal/informal). This is in violation with principle three as stated above.
+
+```{r}
+#| echo: false
+#| warning: false
+knitr::kable(head(mar_group,5), format = "pipe") 
+```
+```
+
