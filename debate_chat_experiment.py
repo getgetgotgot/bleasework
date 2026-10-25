@@ -35,6 +35,68 @@ def complete(client, model, messages, max_tokens):
     return content.strip()
 
 
+def parse_debate(text):
+    """Accept JSON or fenced JSON; never invent turns when parsing fails."""
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
+    try:
+        data = json.loads(cleaned)
+        turns = data.get("turns") if isinstance(data, dict) else data
+        if not isinstance(turns, list) or not turns:
+            return []
+        allowed = {"Agent A", "Agent B", "Agent C", "Critic"}
+        for turn in turns:
+            if (not isinstance(turn, dict) or turn.get("speaker") not in allowed
+                    or type(turn.get("round")) is not int or turn["round"] < 1
+                    or not isinstance(turn.get("message"), str) or not turn["message"].strip()):
+                return []
+        return [{"round": t["round"], "speaker": t["speaker"], "message": t["message"]}
+                for t in turns]
+    except (ValueError, TypeError):
+        return []
+
+
+def debate_transcript(turns):
+    return "\n\n".join(
+        f"Round {turn['round']} — {turn['speaker']}:\n{turn['message']}" for turn in turns
+    )
+
+
+def render_process(result):
+    st.caption("Researcher view · A simulated discussion generated in one model call.")
+    personas, debate, plan, argument = st.tabs(["Personas", "Debate", "Plan", "Argument"])
+    labels = ["Agent A", "Agent B", "Agent C"]
+    people = dict(zip(labels, result.get("persona_lists", [])))
+    with personas:
+        for label, person in people.items():
+            with st.container(border=True):
+                st.subheader(label)
+                st.write(person.get("description", ""))
+                st.write("Position: " + person.get("claim", ""))
+                if person.get("reason"):
+                    st.caption("Selection reason: " + person["reason"])
+        st.info("Critic: supports the proposition and challenges the three opposing agents.")
+    with debate:
+        turns = result.get("debate_turns") or parse_debate(result.get("discussion", ""))
+        if turns:
+            for turn in turns:
+                with st.container(border=True):
+                    st.subheader(f"Round {turn['round']} · {turn['speaker']}")
+                    if turn["speaker"] in people:
+                        st.caption(people[turn["speaker"]].get("description", ""))
+                    else:
+                        st.caption("Supports the proposition · Challenges the team")
+                    st.write(turn["message"])
+        else:
+            st.info("This discussion has no readable turn structure. The original text is shown below.")
+            st.write(result.get("discussion", ""))
+        with st.expander("Raw discussion output"):
+            st.code(result.get("discussion_raw", result.get("discussion", "")), language=None)
+    with plan:
+        st.write(result.get("plan", ""))
+    with argument:
+        st.write(result.get("argument", ""))
+
+
 def generate_argument(client, model, proposition, max_tokens, progress, reply_words=250):
     # A fresh module isolates this session's client without changing the source file
     # or the globals of a module shared with another Streamlit session.
@@ -43,6 +105,7 @@ def generate_argument(client, model, proposition, max_tokens, progress, reply_wo
     backend = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(backend)
     count = 0
+    debate_data = {}
     stages = ["Creating personas", "Selecting personas", "Modeling the debate",
               "Drafting the plan", "Writing the argument"]
 
@@ -50,10 +113,24 @@ def generate_argument(client, model, proposition, max_tokens, progress, reply_wo
         nonlocal count
         progress.write(stages[count] if count < len(stages) else "Continuing generation")
         count += 1
-        return complete(client, model, [{"role": "user", "content": prompt}], max_tokens)
+        output = complete(client, model, [{"role": "user", "content": prompt}], max_tokens)
+        if "[STRUCTURED_DEBATE_OUTPUT]" in prompt:
+            turns = parse_debate(output)
+            debate_data.update(discussion_raw=output, debate_turns=turns)
+            if turns:
+                return debate_transcript(turns)
+        return output
 
     backend.openai_generate = generate
     generator = backend.ArgumentGenerator(model=model, max_length=max_tokens)
+    generator.debate_prompt += '''
+[STRUCTURED_DEBATE_OUTPUT]
+Keep the discussion task above, but return only a valid JSON object with a
+"turns" array. Each turn must have "round" (positive integer), "speaker"
+(exactly "Agent A", "Agent B", "Agent C", or "Critic"), and "message" (string).
+Use rounds to show the progression of the debate and include the Critic's
+challenges and the team's responses. No markdown fences or text outside JSON.
+'''
     generator.surfacegen_prompt += (
         f"\nKeep the final article concise: aim for {reply_words} words and do not "
         f"exceed {reply_words} words. Return only the article."
@@ -61,6 +138,7 @@ def generate_argument(client, model, proposition, max_tokens, progress, reply_wo
     result = generator.generate_one(proposition)
     if not result or not result.get("argument"):
         raise RuntimeError("No argument was generated. Try again or start a new debate.")
+    result.update(debate_data)
     return result
 
 
@@ -112,6 +190,7 @@ def main():
         max_tokens = st.slider("Maximum output tokens per call", 1000, 8000, 4000, 500)
         st.caption("An initial argument uses at least five API calls. Each follow-up uses one. Inference credits apply.")
         st.caption("Chat history lasts for this browser session. Download it before refreshing or starting over.")
+        show_process = st.checkbox("Show researcher view", value=False)
         if st.button("New debate"):
             st.session_state.debate_messages = []
             st.session_state.debate_result = None
@@ -123,12 +202,12 @@ def main():
 
     result = st.session_state.debate_result
     if result:
-        with st.expander("Personas, discussion, and plan"):
-            st.json(result["persona_lists"])
-            st.markdown("### Discussion")
-            st.write(result["discussion"])
-            st.markdown("### Plan")
-            st.write(result["plan"])
+        if show_process:
+            render_process(result)
+            turns = result.get("debate_turns", [])
+            st.download_button("Download debate transcript (.txt)",
+                               debate_transcript(turns) if turns else result.get("discussion", ""),
+                               file_name="debate_transcript.txt", mime="text/plain")
         transcript = "\n\n".join(
             f"{message['role'].capitalize()}:\n{message['content']}"
             for message in st.session_state.debate_messages
